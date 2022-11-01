@@ -103,6 +103,9 @@ pub struct ScriptArgs {
     #[clap(long, help = "Broadcasts the transactions.")]
     pub broadcast: bool,
 
+    #[clap(long, help = "Batch transactions into a single MultiSend transaction.")]
+    pub batch: bool,
+
     #[clap(long, help = "Skips on-chain simulation")]
     pub skip_simulation: bool,
 

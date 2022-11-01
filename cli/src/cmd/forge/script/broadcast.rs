@@ -11,9 +11,9 @@ use crate::{
     update_progress,
 };
 use ethers::{
-    prelude::{Provider, Signer, SignerMiddleware, TxHash},
+    prelude::{Provider, Signer, SignerMiddleware, TxHash, H160},
     providers::{JsonRpcClient, Middleware},
-    types::transaction::eip2718::TypedTransaction,
+    types::{transaction::eip2718::TypedTransaction,Signature},
     utils::format_units,
 };
 use eyre::{ContextCompat, WrapErr};
@@ -21,8 +21,100 @@ use foundry_common::{estimate_eip1559_fees, try_get_http_provider, RetryProvider
 use foundry_config::Chain;
 use futures::StreamExt;
 use indicatif::{ProgressBar, ProgressStyle};
+use reqwest::Response;
 use std::{cmp::min, ops::Mul, sync::Arc};
 use tracing::{instrument, trace};
+
+/// The default address to send MultiSend transactions to: 0x998739BFdAAdde7C933B942a68053933098f9EDa
+pub const DEFAULT_MULTISEND_CONTRACT: H160 = H160([153, 135, 57, 191, 218, 173, 222, 124, 147, 59, 148, 42, 104, 5, 57, 51, 9, 143, 158, 218]);
+
+#[derive(Serialize, Deserialize, Debug, Copy, Clone)]
+pub enum OperationType {
+    Call = 0,
+    DelegateCall = 1,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone)]
+pub struct SafeTransactionServiceRequest {
+    //     "to": "<checksummed address>",
+    //     "value": 0, // Value in wei
+    //     "data": "<0x prefixed hex string>",
+    //     "operation": 0,  // 0 CALL, 1 DELEGATE_CALL
+    //     "safeTxGas": 0,  // Max gas to use in the transaction
+
+    // Used by refund mechanism, not needed here
+    //     "gasToken": "<checksummed address>", // Token address (hold by the Safe) to be used as a refund to the sender, if `null` is Ether
+    //     "baseGas": 0,  // Gast costs not related to the transaction execution (signature check, refund payment...)
+    //     "gasPrice": 0,  // Gas price used for the refund calculation
+    //     "refundReceiver": "<checksummed address>", //Address of receiver of gas payment (or `null` if tx.origin)
+
+    //     "nonce": 0,  // Nonce of the Safe, transaction cannot be executed until Safe's nonce is not equal to this nonce
+    //     "contractTransactionHash": "string",  // Contract transaction hash calculated from all the field
+    //     "sender": "<checksummed address>",  // Owner of the Safe proposing the transaction. Must match one of the signatures
+    //     "signature": "<0x prefixed hex string>",  // One or more ethereum ECDSA signatures of the `contractTransactionHash` as an hex string
+
+    // Not required
+    //     "origin": "string"  // Give more information about the transaction, e.g. "My Custom Safe app"
+    pub safe: Address,
+    
+    pub to: Address,
+
+    pub value: U256,
+
+    pub data: Bytes,
+
+    pub operation: OperationType,
+
+    pub safe_tx_gas: U256,
+
+    pub nonce: U256,
+
+    pub contract_transaction_hash: TxHash,
+
+    pub sender: Address,
+
+    pub signature: Signature, // Likely need to change this type
+
+    pub origin: String,
+
+}
+
+impl SafeTransactionServiceRequest {
+    pub fn new(
+        safe: Address,
+        value: U256,
+        data: Bytes,
+        safe_tx_gas: U256,
+        nonce: U256,
+        contract_transaction_hash: TxHash,
+        sender: Address,
+        signature: Signature,
+    ) -> Self {
+
+        let to: Address = DEFAULT_MULTISEND_CONTRACT as Address;
+        let operation: OperationType = OperationType::DelegateCall;
+        let origin: String = String::from("Foundry Script");
+
+        Self {
+            safe,
+            to,
+            value,
+            data,
+            operation,
+            safe_tx_gas,
+            nonce,
+            contract_transaction_hash,
+            sender,
+            signature,
+            origin,
+        }
+    }
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone)]
+pub struct SafeTransactionServiceResponse {
+    pub safe_tx_hash: TxHash,
+}
 
 impl ScriptArgs {
     /// Sends the transactions which haven't been broadcasted yet.
@@ -219,6 +311,129 @@ impl ScriptArgs {
         }
     }
 
+    pub async fn send_transaction_to_sts<T, S>(
+        &self,
+        mut tx: TypedTransaction,
+        signer: &SignerMiddleware<T, S>,
+        fork_url: &str,
+    ) -> eyre::Result<Response>    
+    where
+        T: Middleware + 'static,
+        S: Signer + 'static,
+    {
+        // Sign tranasction
+        let signature = signer
+        .sign_transaction(
+            &tx,
+            signer.address() // *tx.from().expect("Tx should have a `from`."), // may need to change this to signer address, tx.from() will be the safe contract address?
+        )
+        .await
+        .wrap_err_with(|| "Failed to sign transaction")?;
+
+        // Update gas estimate
+        if has_different_gas_calc(signer.signer().chain_id()) || self.skip_simulation {
+            self.estimate_gas(&mut tx, signer.provider()).await?;
+        }
+
+        // Get nonce
+        let nonce = foundry_utils::next_nonce(*tx.from().expect("no sender"), fork_url, None)
+                .await
+                .map_err(|_| eyre::eyre!("Not able to query the EOA nonce."))?;
+
+        // Create request
+        let sts_req: SafeTransactionServiceRequest = SafeTransactionServiceRequest::new(
+            *tx.from().expect("no sender"),
+            *tx.value().expect("no value"), 
+            tx.data().expect("no data").clone(), 
+            *tx.gas().expect("gas not set"),
+            nonce, 
+            tx.hash(&signature) as TxHash,
+            signer.address(),
+            signature
+        );
+
+        // Get the STS url
+        let sts_url: String = match signer.signer().chain_id() {
+            1 => "https://safe-transaction-mainnet.safe.global".to_string(),
+            5 => "https://safe-transaction-goerli.safe.global".to_string(),
+            _ => "".to_string(),
+        };
+
+        // Send the transaction to the Safe Transaction Service
+        let url = format!("{}/v1/safes/{}/multisig-transactions/", &sts_url, tx.from().expect("no sender"));
+        let client = reqwest::Client::new();
+        let res = client.post(&url)
+            .json(&sts_req)
+            .send()
+            .await
+            .unwrap();
+
+        Ok(res)
+    }
+
+    pub async fn batch_transactions(
+        &self,
+        txs: VecDeque<TypedTransaction>,
+    ) -> eyre::Result<VecDeque<TypedTransaction>> {
+        // Assumes all broadcasted transactions are from the same address
+        let from = txs[0].from().expect("no sender");
+
+        // Track gas estimate for overall batch to use when sending
+        let mut gas_estimate = U256::zero();
+
+        // Iterate through transactions and encode them per the MultiSend contract requirements
+        let mut batch_tx_data: Vec<u8> = Vec::new();
+        for tx in &txs {
+            let mut encoded_tx: Vec<u8> = Vec::new();
+            encoded_tx.push(0); // Operation Type is CALL: 0x00
+
+            // Address bytes
+            if let Some(NameOrAddress::Address(to)) = tx.to() {
+                encoded_tx.append(&mut to.as_fixed_bytes().to_vec());
+            } else if tx.to().is_none() {
+                let to: [u8; 20] = [0; 20];
+                encoded_tx.append(&mut to.to_vec());
+            } 
+            else {
+                eyre::bail!("ENS not supported");
+            }
+            
+            // Value bytes
+            let mut value: [u8; 32] = [0; 32];
+            tx.value().expect("no value").to_little_endian(&mut value);
+            encoded_tx.append(&mut value.to_vec());
+            
+            // Data length and data bytes
+            let mut data: Vec<u8> = tx.data().expect("no data").to_vec();
+            let mut len: [u8; 32] = [0; 32];
+            U256::from(data.len()).to_little_endian(&mut len);
+            encoded_tx.append(&mut len.to_vec());
+            encoded_tx.append(&mut data);
+
+
+            batch_tx_data.append(&mut encoded_tx);
+            gas_estimate += *tx.gas().expect("no gas");
+        }
+
+        // Create the MultiSend transaction
+        let batch_tx = TypedTransaction::Legacy(
+            TransactionRequest {
+                from: Some(*from),
+                to: Some(NameOrAddress::Address(DEFAULT_MULTISEND_CONTRACT)),
+                value: Some(U256::from(0)),
+                data: Some(Bytes::from(batch_tx_data)),
+                gas: Some(gas_estimate),
+                ..Default::default()
+            },
+        );
+
+
+        // Return a VecDeque with one member to fit into the existing code structure
+        let mut batched_txs = VecDeque::new();
+        batched_txs.push_back(batch_tx);
+        Ok(batched_txs)
+    }
+
     /// Executes the passed transactions in sequence, and if no error has occurred, broadcasts
     /// them.
     pub async fn handle_broadcastable_transactions(
@@ -230,8 +445,16 @@ impl ScriptArgs {
         mut script_config: ScriptConfig,
         mut verify: VerifyBundle,
     ) -> eyre::Result<()> {
-        if let Some(txs) = result.transactions {
+        if let Some(mut txs) = result.transactions {
             if let Some(fork_url) = script_config.evm_opts.fork_url.clone() {
+                
+                // If transactions are to be batched, we need to encode them first.
+                if self.batch {
+                    txs = self.batch_transactions(txs)
+                    .await
+                    .wrap_err_with(|| "Failed to batch transactions")?;
+                }
+
                 let gas_filled_txs = if self.skip_simulation {
                     println!("\nSKIPPING ON CHAIN SIMULATION.");
                     txs.into_iter().map(TransactionWithMetadata::from_typed_transaction).collect()
@@ -382,6 +605,9 @@ impl ScriptArgs {
 
         Ok(pending.tx_hash())
     }
+
+
+    // async fn broadcast_safe_tx
 
     async fn estimate_gas<T>(
         &self,
