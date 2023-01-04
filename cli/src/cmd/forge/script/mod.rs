@@ -113,8 +113,22 @@ pub struct ScriptArgs {
     #[clap(long, help = "Broadcasts the transactions.")]
     pub broadcast: bool,
 
-    #[clap(long, help = "Batch transactions into a single MultiSend transaction.")]
-    pub batch: bool,
+    #[clap(long, help = "Batch transactions all transactions in a script into a single MultiSend transaction per chain. Assumes all transactions are sent from the CLI provided --from or --from-safe (if -sts is selected) address.")]
+    pub multisend: bool,
+
+    #[clap(
+        long = "safe-transaction-service", 
+        short = "sts", 
+        help = "Send the transaction(s) to the Safe Transaction Service instead of to a blockchain RPC.")]
+    pub sts: bool,
+
+    #[clap(
+        long = "from-safe",
+        help = "The Gnosis Safe that the transactions will be sent from. Requires the -sts flag.",
+        requires = "sts",
+        value_name = "ADDRESS"
+    )]
+    pub from_safe: Option<Address>, 
 
     #[clap(long, help = "Skips on-chain simulation")]
     pub skip_simulation: bool,

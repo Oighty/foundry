@@ -381,7 +381,7 @@ impl ScriptArgs {
 
         // Create request
         let sts_req: SafeTransactionServiceRequest = SafeTransactionServiceRequest::new(
-            *tx.from().expect("no sender"),
+            *tx.from().expect("no sender"), // Should we insert the CLI provided safe address here?
             *tx.value().expect("no value"), 
             tx.data().expect("no data").clone(), 
             *tx.gas().expect("gas not set"),
@@ -410,12 +410,17 @@ impl ScriptArgs {
         Ok(res)
     }
 
-    pub async fn batch_transactions(
+    pub async fn batch_transactions_in_multisend(
         &self,
         txs: BroadcastableTransactions,
     ) -> eyre::Result<BroadcastableTransactions> {
-        // Assumes all broadcasted transactions are from the same address
-        let from = txs[0].transaction.from().expect("no sender");
+        // If batch is being sent to STS, then assume it's from the provided safe address
+        // Otherwise, assumes all broadcasted transactions are from the sender of the first transaction
+        let from = if self.sts {
+            self.from_safe
+        } else {
+            txs[0].transaction.from().expect("no sender")
+        };
 
         // Assumes all broadcasted transactions are to the same rpc url
         let rpc_url: Option<RpcUrl> = txs[0].rpc().expect("no rpc url");
@@ -590,8 +595,8 @@ impl ScriptArgs {
                 .await?;
 
             // If transactions are to be batched, we need to encode them first.
-            if self.batch {
-                txs = self.batch_transactions(txs)
+            if self.multisend {
+                txs = self.batch_transactions_in_multisend(txs)
                 .await
                 .wrap_err_with(|| "Failed to batch transactions")?;
             }
