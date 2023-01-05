@@ -11,9 +11,9 @@ use crate::{
     update_progress,
 };
 use ethers::{
-    prelude::{Provider, Signer, SignerMiddleware, TxHash, H160},
+    prelude::{Provider, Signer, SignerMiddleware, TxHash},
     providers::{JsonRpcClient, Middleware},
-    types::{transaction::eip2718::TypedTransaction,Signature},
+    types::transaction::eip2718::TypedTransaction,
     utils::format_units,
 };
 use eyre::{bail, ContextCompat, WrapErr};
@@ -21,7 +21,6 @@ use foundry_common::{estimate_eip1559_fees, try_get_http_provider, RetryProvider
 use futures::StreamExt;
 use std::{cmp::min, collections::HashSet, ops::Mul, sync::Arc};
 use tracing::trace;
-use reqwest::Response;
 
 impl ScriptArgs {
     /// Sends the transactions which haven't been broadcasted yet.
@@ -364,7 +363,7 @@ impl ScriptArgs {
         known_contracts: &ContractsByArtifact,
     ) -> eyre::Result<Vec<ScriptSequence>> {
         if !txs.is_empty() {
-            let gas_filled_txs = self
+            let mut gas_filled_txs = self
                 .fills_transactions_with_gas(txs, script_config, decoder, known_contracts)
                 .await?;
 

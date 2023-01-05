@@ -1,16 +1,13 @@
-use super;
+use super::{ScriptArgs, *};
+use crate::cmd::forge::script::multisend::DEFAULT_MULTISEND_CONTRACT;
 use ethers::{
-    prelude::{Provider, Signer, SignerMiddleware, TxHash, H160},
-    providers::{JsonRpcClient, Middleware},
-    types::{transaction::eip2718::TypedTransaction,Signature},
-    utils::format_units,
+    prelude::{Signer, SignerMiddleware, TxHash},
+    providers::Middleware,
+    types::{transaction::eip2718::TypedTransaction,Signature}
 };
-use eyre::{bail, ContextCompat, WrapErr};
+use eyre::WrapErr;
 use reqwest::Response;
 use serde::{Deserialize, Serialize};
-
-/// The default address to send MultiSend transactions to: 0x998739BFdAAdde7C933B942a68053933098f9EDa
-pub const DEFAULT_MULTISEND_CONTRACT: H160 = H160([153, 135, 57, 191, 218, 173, 222, 124, 147, 59, 148, 42, 104, 5, 57, 51, 9, 143, 158, 218]);
 
 #[derive(Serialize, Deserialize, Debug, Copy, Clone)]
 pub enum OperationType {
@@ -103,7 +100,7 @@ pub struct SafeTransactionServiceResponse {
 impl ScriptArgs {
     pub async fn send_transaction_to_sts<T, S>(
         &self,
-        mut tx: TypedTransaction,
+        tx: TypedTransaction,
         signer: &SignerMiddleware<T, S>,
         fork_url: &str,
     ) -> eyre::Result<Response>    
@@ -120,10 +117,11 @@ impl ScriptArgs {
         .await
         .wrap_err_with(|| "Failed to sign transaction")?;
 
-        // Update gas estimate
-        if has_different_gas_calc(signer.signer().chain_id()) || self.skip_simulation {
-            self.estimate_gas(&mut tx, signer.provider()).await?;
-        }
+        // // Update gas estimate
+        // Is this necessary? Txns are already gas filled
+        // if has_different_gas_calc(signer.signer().chain_id()) || self.skip_simulation {
+        //     self.estimate_gas(&mut tx, signer.provider()).await?;
+        // }
 
         // Get nonce
         let nonce = foundry_utils::next_nonce(*tx.from().expect("no sender"), fork_url, None)
