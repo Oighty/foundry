@@ -69,6 +69,8 @@ mod receipts;
 mod sequence;
 pub mod transaction;
 mod verify;
+mod multisend;
+mod gnosis_safe;
 
 use crate::cmd::retry::RetryArgs;
 pub use transaction::TransactionWithMetadata;
