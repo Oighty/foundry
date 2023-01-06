@@ -120,7 +120,9 @@ pub struct ScriptArgs {
 
     #[clap(
         long = "sts",
-        help = "Send the transaction(s) to the Safe Transaction Service instead of to a blockchain RPC. This assumes that the broadcasts are being sent from a Gnosis Safe. If this is not the case, the transactions will fail.")]
+        help = "Send the transaction(s) to the Safe Transaction Service instead of to a blockchain RPC. This assumes that the broadcasts are being sent from a Gnosis Safe. If this is not the case, the transactions will fail.",
+        requires = "skip_simulation"
+    )]
     pub safe_transaction_service: bool,
 
     #[clap(long, help = "Address that will propose a transaction to the Safe Transaction Service. This is only used if -sts is selected.")]
