@@ -19,13 +19,8 @@ impl ScriptArgs {
             eyre::bail!("No transactions to batch");
         }
 
-        // If batch is being sent to STS, then assume it's from the provided safe address
-        // Otherwise, assumes all broadcasted transactions are from the sender of the first transaction
-        let from = if self.safe_transaction_service {
-            self.from_safe
-        } else {
-            Some(txs[0].transaction.from().expect("no sender").clone())
-        };
+        // Assumes all broadcasted transactions are from the sender of the first transaction
+        let from = Some(txs[0].transaction.from().expect("no sender").clone());
 
         // Assumes all broadcasted transactions are to the same rpc url
         let rpc_url: Option<RpcUrl> = txs[0].rpc.clone();
@@ -65,7 +60,12 @@ impl ScriptArgs {
 
 
             batch_tx_data.append(&mut encoded_tx);
-            gas_estimate += *txn.gas().expect("no gas");
+
+            // If using STS, then we estimate gas later rather than use on-chain sims due to issue with having no private key for a safe
+            if !self.safe_transaction_service {
+                gas_estimate += *txn.gas().expect("no gas");
+            }
+            
         }
 
         // Create the MultiSend transaction

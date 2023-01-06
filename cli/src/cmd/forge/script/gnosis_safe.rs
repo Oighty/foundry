@@ -1,15 +1,22 @@
 use super::{ScriptArgs, sequence::ScriptSequence, *};
-use crate::{cmd::forge::script::multisend::DEFAULT_MULTISEND_CONTRACT, opts::WalletType};
+use crate::opts::WalletType;
 use ethers::{
     prelude::{Signer, SignerMiddleware, TxHash},
     providers::Middleware,
-    types::{transaction::eip2718::TypedTransaction,Signature,H160}
+    types::{transaction::eip2718::TypedTransaction, H160},
+    core::utils::to_checksum
 };
 use eyre::WrapErr;
 use reqwest::Response;
 use serde::{Deserialize, Serialize};
 use foundry_common::{try_get_http_provider};
 use std::{collections::HashSet, sync::Arc};
+
+// TODO
+// [ ] Use Gnosis Gas Estimation instead of RPC call - requires another API call to Gnosis -> Line 129
+// [ ] Fix address checksums (not working right for some reason)
+// [ ] Some value types in the SafeTransactionServiceRequest struct are not being converted correctly. I'm not positive, but probably Operation and Data
+// [ ] STS transactions still generate a "broadcast" log, but it doesn't really mean anything. Probably need to update that or skip when using STS.
 
 #[derive(Serialize, Deserialize, Debug, Copy, Clone)]
 pub enum OperationType {
@@ -38,9 +45,9 @@ pub struct SafeTransactionServiceRequest {
 
     // Not required
     //     "origin": "string"  // Give more information about the transaction, e.g. "My Custom Safe app"
-    pub safe: Address,
+    pub safe: String,
     
-    pub to: Address,
+    pub to: String,
 
     pub value: U256,
 
@@ -50,13 +57,17 @@ pub struct SafeTransactionServiceRequest {
 
     pub safe_tx_gas: U256,
 
+    pub base_gas: U256,
+
+    pub gas_price: U256,
+
     pub nonce: U256,
 
     pub contract_transaction_hash: TxHash,
 
-    pub sender: Address,
+    pub sender: String,
 
-    pub signature: Signature, // Likely need to change this type
+    // pub signature: Signature, // Likely need to change this type
 
     pub origin: String,
 
@@ -64,18 +75,18 @@ pub struct SafeTransactionServiceRequest {
 
 impl SafeTransactionServiceRequest {
     pub fn new(
-        safe: Address,
+        safe: String,
+        to: String,
+        operation: OperationType,
         value: U256,
         data: Bytes,
         safe_tx_gas: U256,
         nonce: U256,
         contract_transaction_hash: TxHash,
-        sender: Address,
-        signature: Signature,
+        sender: String,
+        // signature: Signature,
     ) -> Self {
 
-        let to: Address = DEFAULT_MULTISEND_CONTRACT as Address;
-        let operation: OperationType = OperationType::DelegateCall;
         let origin: String = String::from("Foundry Script");
 
         Self {
@@ -85,10 +96,12 @@ impl SafeTransactionServiceRequest {
             data,
             operation,
             safe_tx_gas,
+            base_gas: U256::zero(),
+            gas_price: U256::zero(),
             nonce,
             contract_transaction_hash,
             sender,
-            signature,
+            // signature,
             origin,
         }
     }
@@ -102,7 +115,7 @@ pub struct SafeTransactionServiceResponse {
 impl ScriptArgs {
     pub async fn send_transaction_to_sts<T, S>(
         &self,
-        tx: TypedTransaction,
+        mut tx: TypedTransaction,
         signer: &SignerMiddleware<T, S>,
         fork_url: &str,
     ) -> eyre::Result<Response>    
@@ -119,10 +132,9 @@ impl ScriptArgs {
         .await
         .wrap_err_with(|| "Failed to sign transaction")?;
 
-        // // Update gas estimate
-        // Is this necessary? Txns are already gas filled
+        // Get gas estimate since we are skipping on-chain simulation
         // if has_different_gas_calc(signer.signer().chain_id()) || self.skip_simulation {
-        //     self.estimate_gas(&mut tx, signer.provider()).await?;
+        self.estimate_gas(&mut tx, signer.provider()).await?;
         // }
 
         // Get nonce
@@ -131,26 +143,49 @@ impl ScriptArgs {
                 .map_err(|_| eyre::eyre!("Not able to query the EOA nonce."))?;
 
         // Create request
+        let to = if let Some(NameOrAddress::Address(addr)) = tx.to() {
+            *addr
+        } else if tx.to().is_none() {
+            H160::zero()
+        } 
+        else {
+            eyre::bail!("ENS not supported")
+        };
+
+        // For now, assume all transactions are calls unless multisends
+        let operation = if self.multisend {
+            OperationType::DelegateCall
+        } else {
+            OperationType::Call
+        };
+
+        let chain_id = Some(signer.signer().chain_id() as u8);
+
         let sts_req: SafeTransactionServiceRequest = SafeTransactionServiceRequest::new(
-            *tx.from().expect("no sender"), // Should we insert the CLI provided safe address here?
+            to_checksum(tx.from().expect("no sender"), chain_id),
+            to_checksum(&to, chain_id),
+            operation,
             *tx.value().expect("no value"), 
             tx.data().expect("no data").clone(), 
             *tx.gas().expect("gas not set"),
             nonce, 
             tx.hash(&signature) as TxHash,
-            signer.address(),
-            signature
+            to_checksum(&signer.address(), chain_id)
         );
 
+        println!("{:?}", sts_req);
+
         // Get the STS url
-        let sts_url: String = match signer.signer().chain_id() {
+        let sts_url: String = match chain_id.unwrap() {
             1 => "https://safe-transaction-mainnet.safe.global".to_string(),
             5 => "https://safe-transaction-goerli.safe.global".to_string(),
             _ => "".to_string(),
         };
 
         // Send the transaction to the Safe Transaction Service
-        let url = format!("{}/v1/safes/{}/multisig-transactions/", &sts_url, tx.from().expect("no sender"));
+        let address_str = to_checksum(tx.from().expect("no sender"), chain_id);
+        println!("{}", address_str);
+        let url = format!("{}/api/v1/safes/{}/multisig-transactions/", &sts_url, &address_str);
         let client = reqwest::Client::new();
         let res = client.post(&url)
             .json(&sts_req)
@@ -170,12 +205,8 @@ impl ScriptArgs {
         let provider = Arc::new(try_get_http_provider(fork_url)?);
 
         // Get required address to construct the signer middleware
-        // Only 1 expected
-        let required_addresses: HashSet<H160> = script_sequence
-                .typed_transactions()
-                .into_iter()
-                .map(|(_, tx)| *tx.from().expect("No sender for onchain transaction!"))
-                .collect();
+        let mut required_addresses = HashSet::new();
+        required_addresses.insert(self.safe_proposer.unwrap());
 
         if required_addresses.len() > 1 || script_wallets.len() > 1 {
             eyre::bail!("Only one signer is supported.");

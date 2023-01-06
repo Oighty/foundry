@@ -119,19 +119,12 @@ pub struct ScriptArgs {
     pub multisend: bool,
 
     #[clap(
-        long, 
-        short,
-        visible_alias = "sts",
-        help = "Send the transaction(s) to the Safe Transaction Service instead of to a blockchain RPC.")]
+        long = "sts",
+        help = "Send the transaction(s) to the Safe Transaction Service instead of to a blockchain RPC. This assumes that the broadcasts are being sent from a Gnosis Safe. If this is not the case, the transactions will fail.")]
     pub safe_transaction_service: bool,
 
-    #[clap(
-        long = "from-safe",
-        help = "The Gnosis Safe that the transactions will be sent from. Requires the --sts flag.",
-        requires = "sts",
-        value_name = "ADDRESS"
-    )]
-    pub from_safe: Option<Address>, 
+    #[clap(long, help = "Address that will propose a transaction to the Safe Transaction Service. This is only used if -sts is selected.")]
+    pub safe_proposer: Option<Address>,
 
     #[clap(long, help = "Skips on-chain simulation")]
     pub skip_simulation: bool,

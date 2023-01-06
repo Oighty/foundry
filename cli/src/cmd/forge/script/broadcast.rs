@@ -610,7 +610,7 @@ impl ScriptArgs {
         Ok(pending.tx_hash())
     }
 
-    async fn estimate_gas<T>(
+    pub async fn estimate_gas<T>(
         &self,
         tx: &mut TypedTransaction,
         provider: &Provider<T>,
