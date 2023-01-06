@@ -20,6 +20,7 @@ impl ScriptArgs {
         trace!(target: "script", "executing script command");
 
         let (config, evm_opts) = self.load_config_and_evm_opts_emit_warnings()?;
+
         let mut script_config = ScriptConfig {
             // dapptools compatibility
             sender_nonce: U256::one(),

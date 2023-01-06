@@ -13,6 +13,7 @@ use crate::{
 use ethers::{
     prelude::{Provider, Signer, SignerMiddleware, TxHash},
     providers::{JsonRpcClient, Middleware},
+    types::transaction::eip2718::TypedTransaction,
     utils::format_units,
 };
 use eyre::{bail, ContextCompat, WrapErr};
@@ -257,8 +258,7 @@ impl ScriptArgs {
         }
     }
 
-    /// Executes the created transactions, and if no error has occurred, broadcasts
-    /// them.
+    /// Executes the passed transactions, and if no error has occurred, broadcasts them.
     pub async fn handle_broadcastable_transactions(
         &self,
         mut result: ScriptResult,
@@ -341,7 +341,17 @@ impl ScriptArgs {
 
         deployment_sequence.add_libraries(libraries);
 
-        self.send_transactions(deployment_sequence, &rpc, &result.script_wallets).await?;
+        if self.safe_transaction_service {
+            self.send_transactions_to_sts(
+                deployment_sequence,
+                &rpc,
+                &result.script_wallets,
+            )
+            .await?;
+        } else {
+            self.send_transactions(deployment_sequence, &rpc, &result.script_wallets).await?;    
+        }
+        
 
         if self.verify {
             return deployment_sequence.verify_contracts(&script_config.config, verify).await
@@ -363,9 +373,17 @@ impl ScriptArgs {
         known_contracts: &ContractsByArtifact,
     ) -> eyre::Result<Vec<ScriptSequence>> {
         if !txs.is_empty() {
-            let gas_filled_txs = self
+            let mut gas_filled_txs = self
                 .fills_transactions_with_gas(txs, script_config, decoder, known_contracts)
                 .await?;
+
+            // If transactions are to be batched, we need to encode them first. 
+            // TODO - determine if this will break different broadcast clocks into different batches using the current solidity cheatcodes
+            if self.multisend {
+                gas_filled_txs = self.batch_transactions_in_multisend(gas_filled_txs)
+                .await
+                .wrap_err_with(|| "Failed to batch transactions")?;
+            }
 
             let returns = self.get_returns(&*script_config, &script_result.returned)?;
 
@@ -592,7 +610,7 @@ impl ScriptArgs {
         Ok(pending.tx_hash())
     }
 
-    async fn estimate_gas<T>(
+    pub async fn estimate_gas<T>(
         &self,
         tx: &mut TypedTransaction,
         provider: &Provider<T>,

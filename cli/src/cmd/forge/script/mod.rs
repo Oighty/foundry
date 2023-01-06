@@ -69,6 +69,8 @@ mod receipts;
 mod sequence;
 pub mod transaction;
 mod verify;
+mod multisend;
+mod gnosis_safe;
 
 use crate::cmd::retry::RetryArgs;
 pub use transaction::TransactionWithMetadata;
@@ -112,6 +114,19 @@ pub struct ScriptArgs {
 
     #[clap(long, help = "Broadcasts the transactions.")]
     pub broadcast: bool,
+
+    #[clap(long, help = "Batch transactions all transactions in a script into a single MultiSend transaction per chain. Assumes all transactions are sent from the CLI provided --from or --from-safe (if -sts is selected) address.")]
+    pub multisend: bool,
+
+    #[clap(
+        long = "sts",
+        help = "Send the transaction(s) to the Safe Transaction Service instead of to a blockchain RPC. This assumes that the broadcasts are being sent from a Gnosis Safe. If this is not the case, the transactions will fail.",
+        requires = "skip_simulation"
+    )]
+    pub safe_transaction_service: bool,
+
+    #[clap(long, help = "Address that will propose a transaction to the Safe Transaction Service. This is only used if -sts is selected.")]
+    pub safe_proposer: Option<Address>,
 
     #[clap(long, help = "Skips on-chain simulation")]
     pub skip_simulation: bool,
