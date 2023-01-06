@@ -341,7 +341,17 @@ impl ScriptArgs {
 
         deployment_sequence.add_libraries(libraries);
 
-        self.send_transactions(deployment_sequence, &rpc, &result.script_wallets).await?;
+        if self.safe_transaction_service {
+            self.send_transactions_to_sts(
+                deployment_sequence,
+                &rpc,
+                &result.script_wallets,
+            )
+            .await?;
+        } else {
+            self.send_transactions(deployment_sequence, &rpc, &result.script_wallets).await?;    
+        }
+        
 
         if self.verify {
             return deployment_sequence.verify_contracts(&script_config.config, verify).await
@@ -599,9 +609,6 @@ impl ScriptArgs {
 
         Ok(pending.tx_hash())
     }
-
-
-    // async fn broadcast_safe_tx
 
     async fn estimate_gas<T>(
         &self,

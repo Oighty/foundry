@@ -1,13 +1,15 @@
-use super::{ScriptArgs, *};
-use crate::cmd::forge::script::multisend::DEFAULT_MULTISEND_CONTRACT;
+use super::{ScriptArgs, sequence::ScriptSequence, *};
+use crate::{cmd::forge::script::multisend::DEFAULT_MULTISEND_CONTRACT, opts::WalletType};
 use ethers::{
     prelude::{Signer, SignerMiddleware, TxHash},
     providers::Middleware,
-    types::{transaction::eip2718::TypedTransaction,Signature}
+    types::{transaction::eip2718::TypedTransaction,Signature,H160}
 };
 use eyre::WrapErr;
 use reqwest::Response;
 use serde::{Deserialize, Serialize};
+use foundry_common::{try_get_http_provider};
+use std::{collections::HashSet, sync::Arc};
 
 #[derive(Serialize, Deserialize, Debug, Copy, Clone)]
 pub enum OperationType {
@@ -108,7 +110,7 @@ impl ScriptArgs {
         T: Middleware + 'static,
         S: Signer + 'static,
     {
-        // Sign tranasction
+        // Sign transaction
         let signature = signer
         .sign_transaction(
             &tx,
@@ -157,5 +159,53 @@ impl ScriptArgs {
             .unwrap();
 
         Ok(res)
+    }
+
+    pub async fn send_transactions_to_sts(
+        &self,
+        script_sequence: &ScriptSequence,
+        fork_url: &str,
+        script_wallets: &[LocalWallet],
+    ) -> eyre::Result<()> {
+        let provider = Arc::new(try_get_http_provider(fork_url)?);
+
+        // Get required address to construct the signer middleware
+        // Only 1 expected
+        let required_addresses: HashSet<H160> = script_sequence
+                .typed_transactions()
+                .into_iter()
+                .map(|(_, tx)| *tx.from().expect("No sender for onchain transaction!"))
+                .collect();
+
+        if required_addresses.len() > 1 || script_wallets.len() > 1 {
+            eyre::bail!("Only one signer is supported.");
+        }
+
+        let local_wallets = self
+                    .wallets
+                    .find_all(provider.clone(), required_addresses, script_wallets)
+                    .await?;
+
+        // Should only be one signer
+        let wallet = local_wallets.values().last().wrap_err("Error accessing local wallet when trying to send onchain transaction, did you set a private key, mnemonic or keystore?")?;
+
+        // Iterate through transactions and send to STS
+        let txs = script_sequence.transactions.clone();
+        
+        if txs.len() == 0 {
+            eyre::bail!("No transactions to send");
+        }
+
+        for tx in txs {
+            let res = match wallet {
+                WalletType::Local(signer) => self.send_transaction_to_sts(tx.transaction.clone(), signer, fork_url).await?,
+                WalletType::Ledger(signer) => self.send_transaction_to_sts(tx.transaction.clone(), signer, fork_url).await?,
+                WalletType::Trezor(signer) => self.send_transaction_to_sts(tx.transaction.clone(), signer, fork_url).await?,
+                WalletType::Aws(signer) => self.send_transaction_to_sts(tx.transaction.clone(), signer, fork_url).await?,
+            };
+            println!("STS Response: {:?}", res);
+        }
+
+        Ok(())
     }
 }
