@@ -4,14 +4,14 @@ pub mod vanity;
 
 use crate::{
     cmd::{cast::wallet::vanity::VanityArgs, Cmd},
-    opts::Wallet,
+    opts::{Wallet, SignType},
 };
 use cast::SimpleCast;
 use clap::Parser;
 use ethers::{
     core::rand::thread_rng,
     signers::{LocalWallet, Signer},
-    types::{Address, Signature},
+    types::{Address, Signature, H256},
 };
 use eyre::Context;
 
@@ -56,10 +56,10 @@ pub enum WalletSubcommands {
         #[clap(flatten)]
         wallet: Wallet,
     },
-    #[clap(name = "sign", visible_alias = "s", about = "Sign a message.")]
+    #[clap(name = "sign", visible_alias = "s", about = "Sign payloads with your wallet.")]
     Sign {
-        #[clap(help = "message to sign", value_name = "MESSAGE")]
-        message: String,
+        #[clap(subcommand)]
+        command: Option<SignType>,
         #[clap(flatten)]
         wallet: Wallet,
     },
@@ -118,10 +118,30 @@ impl WalletSubcommands {
                 let addr = wallet.address();
                 println!("{}", SimpleCast::to_checksum_address(&addr));
             }
-            WalletSubcommands::Sign { message, wallet } => {
+            WalletSubcommands::Sign { command, wallet } => {
                 let wallet = wallet.signer(0).await?;
-                let sig = wallet.sign_message(message).await?;
-                println!("Signature: 0x{sig}");
+                match command {
+                    Some(SignType::Message { message }) => {
+                        let sig = wallet.sign_message(message).await?;
+                        println!("Signature: 0x{sig}");
+                    }
+                    Some(SignType::Hash { hash }) => {
+                        let hash = hash.strip_prefix("0x").unwrap_or(&hash);
+                        match hash.len() {
+                            64 => {
+                                let hash = hex::decode(hash).wrap_err("Invalid hash")?;
+                                let hash = H256::from_slice(&hash);
+                                let sig = wallet.sign_hash(&hash).await?;
+                                println!("Signature: 0x{sig}");
+                            }
+                            _ => eyre::bail!("Invalid hash length. Must be 64 characters."),
+                        }
+                        
+                    }
+                    None => {
+                        println!("No subcommand provided. Please provide a subcommand for the type of data to sign.")
+                    }
+                }
             }
             WalletSubcommands::Verify { message, signature, address } => {
                 let pubkey: Address = address.parse().wrap_err("Invalid address")?;

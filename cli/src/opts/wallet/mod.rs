@@ -1,6 +1,6 @@
 use async_trait::async_trait;
 use cast::{AwsChainProvider, AwsClient, AwsHttpClient, AwsRegion, KmsClient};
-use clap::Parser;
+use clap::{Parser, Subcommand};
 use ethers::{
     signers::{
         coins_bip39::English, AwsSigner, AwsSignerError, HDPath as LedgerHDPath, Ledger,
@@ -9,7 +9,7 @@ use ethers::{
     },
     types::{
         transaction::{eip2718::TypedTransaction, eip712::Eip712},
-        Address, Signature,
+        Address, Signature, H256,
     },
 };
 use eyre::{bail, eyre, Result, WrapErr};
@@ -468,6 +468,10 @@ impl Signer for WalletSigner {
         delegate!(self, inner => inner.sign_typed_data(payload).await.map_err(Into::into))
     }
 
+    async fn sign_hash(&self, hash: &H256) -> Result<Signature, Self::Error> {
+        delegate!(self, inner => inner.sign_hash(hash).await.map_err(Into::into))
+    }
+
     fn address(&self) -> Address {
         delegate!(self, inner => inner.address())
     }
@@ -508,6 +512,10 @@ impl Signer for &WalletSigner {
         (*self).sign_typed_data(payload).await
     }
 
+    async fn sign_hash(&self, hash: &H256) -> Result<Signature, Self::Error> {
+        (*self).sign_hash(hash).await
+    }
+
     fn address(&self) -> Address {
         (*self).address()
     }
@@ -526,6 +534,26 @@ impl Signer for &WalletSigner {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct KeystoreFile {
     pub address: Address,
+}
+
+#[derive(Debug, Subcommand)]
+#[clap(
+    about = "Sign a message, hash, transaction or typed data",
+    next_display_order = None
+)]
+pub enum SignType {
+    #[clap(name = "--message", about = "Sign a message. The message will be prefixed with the Ethereum Signed Message header and hashed before signing.")]
+    Message {
+        #[clap(value_name = "MESSAGE")]
+        message: String,
+    },
+    #[clap(name = "--hash", about = "Sign a pre-computed hash. The hash will be signed directly with no headers or additional hashing performed.")]
+    Hash {
+        #[clap(value_name = "HASH")]
+        hash: String,
+    },
+    // Transaction,
+    // TypedData,
 }
 
 #[cfg(test)]
