@@ -468,8 +468,8 @@ impl Signer for WalletSigner {
         delegate!(self, inner => inner.sign_typed_data(payload).await.map_err(Into::into))
     }
 
-    async fn sign_hash(&self, hash: &H256) -> Result<Signature, Self::Error> {
-        delegate!(self, inner => inner.sign_hash(hash).await.map_err(Into::into))
+    async fn sign_raw_hash(&self, hash: &H256) -> Result<Signature, Self::Error> {
+        delegate!(self, inner => inner.sign_raw_hash(hash).await.map_err(Into::into))
     }
 
     fn address(&self) -> Address {
@@ -512,8 +512,8 @@ impl Signer for &WalletSigner {
         (*self).sign_typed_data(payload).await
     }
 
-    async fn sign_hash(&self, hash: &H256) -> Result<Signature, Self::Error> {
-        (*self).sign_hash(hash).await
+    async fn sign_raw_hash(&self, hash: &H256) -> Result<Signature, Self::Error> {
+        (*self).sign_raw_hash(hash).await
     }
 
     fn address(&self) -> Address {

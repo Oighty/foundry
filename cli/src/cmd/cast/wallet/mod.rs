@@ -131,7 +131,7 @@ impl WalletSubcommands {
                             64 => {
                                 let hash = hex::decode(hash).wrap_err("Invalid hash")?;
                                 let hash = H256::from_slice(&hash);
-                                let sig = wallet.sign_hash(&hash).await?;
+                                let sig = wallet.sign_raw_hash(&hash).await?;
                                 println!("Signature: 0x{sig}");
                             }
                             _ => eyre::bail!("Invalid hash length. Must be 64 characters."),
